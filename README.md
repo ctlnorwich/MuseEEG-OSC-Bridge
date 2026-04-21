@@ -53,6 +53,48 @@ uv run muse-osc-bridge --no-ppg --no-acc --no-gyro
 
 If the Muse stream disconnects, the app will keep retrying the `muselsl` connection and each LSL-to-OSC worker will reconnect when its stream reappears.
 
+## Desktop GUI
+
+Run the PyQt6 GUI:
+
+```bash
+uv run muse-osc-bridge-gui
+```
+
+The GUI includes:
+
+- `Connect` / `Disconnect` controls
+- Inputs for all CLI options (`osc-ip`, `osc-port`, `muse-address`, `muse-name`, `backend`, `interface`, `reconnect-delay`)
+- Checkboxes for all boolean flags (`aux`, `verbose`, `no-ppg`, `no-acc`, `no-gyro`)
+- A live scrolling application log panel
+
+## Build Standalone App (Local)
+
+Install PyInstaller in your virtual environment and build the GUI app:
+
+```bash
+uv pip install pyinstaller
+uv run pyinstaller Muse-OSC-Bridge.spec
+```
+
+Generated binaries will be placed under `dist/`.
+
+## Build Standalone App (GitHub Releases)
+
+This repo includes a release workflow at `.github/workflows/release-pyinstaller.yml` using the marketplace action:
+
+- `Martin005/pyinstaller-action@v1.2.0`
+
+The workflow builds from `Muse-OSC-Bridge.spec` so local and CI packaging use the same hidden imports and data collection rules.
+
+It runs on:
+
+- `macos-latest`
+- `windows-latest`
+- `ubuntu-latest`
+
+And uploads a build artifact for each OS whenever a GitHub Release is published.
+
 ---
 
 ## License

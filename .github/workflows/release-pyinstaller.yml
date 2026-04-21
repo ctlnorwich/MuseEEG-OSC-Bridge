@@ -1,0 +1,47 @@
+name: Build Standalone Apps
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build with PyInstaller Action
+        uses: Martin005/pyinstaller-action@v1.2.0
+        with:
+          python_ver: "3.11"
+          spec: "Muse-OSC-Bridge.spec"
+          requirements: "requirements.txt"
+          upload_exe_with_name: "Muse-OSC-Bridge-${{ matrix.os }}"
+
+      - name: Ad-hoc codesign with Bluetooth entitlements (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          codesign --force --deep --sign - \
+            --entitlements entitlements.plist \
+            dist/Muse-OSC-Bridge.app
+
+      - name: Zip .app for upload (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          cd dist
+          zip -r --symlinks Muse-OSC-Bridge-macos.zip Muse-OSC-Bridge.app
+
+      - name: Upload signed .app artifact (macOS only)
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muse-OSC-Bridge-macos-app
+          path: dist/Muse-OSC-Bridge-macos.zip

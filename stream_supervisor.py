@@ -2,12 +2,41 @@
 
 from __future__ import annotations
 
-import subprocess
+import logging
+import multiprocessing as mp
+from queue import Full
 from dataclasses import dataclass
 from threading import Event, Thread
 import time
 
 import pylsl
+
+
+def _run_muselsl_stream(
+    address: str | None,
+    backend: str,
+    interface: str | None,
+    name: str | None,
+    ppg_enabled: bool,
+    acc_enabled: bool,
+    gyro_enabled: bool,
+    verbose: bool,
+) -> None:
+    """Run muselsl streaming inside a child process."""
+    from muselsl import stream
+
+    log_level = logging.INFO if verbose else logging.ERROR
+    stream(
+        address=address,
+        backend=backend,
+        interface=interface,
+        name=name,
+        ppg_enabled=ppg_enabled,
+        acc_enabled=acc_enabled,
+        gyro_enabled=gyro_enabled,
+        retries=10,
+        log_level=log_level,
+    )
 
 
 @dataclass
@@ -23,6 +52,7 @@ class MuseStreamSupervisor:
     gyro_enabled: bool = True
     reconnect_delay_seconds: float = 3.0
     verbose: bool = False
+    log_queue: object | None = None
 
     def __post_init__(self) -> None:
         self._stop_event = Event()
@@ -46,6 +76,16 @@ class MuseStreamSupervisor:
         """Return True if an EEG LSL stream is already broadcasting."""
         return bool(pylsl.resolve_byprop("type", "EEG", timeout=1.0))
 
+    def _log(self, message: str) -> None:
+        """Emit one supervisor log line to stdout or an optional GUI queue."""
+        if self.log_queue is None:
+            print(message)
+            return
+        try:
+            self.log_queue.put_nowait(f"[supervisor] {message}")
+        except Full:
+            pass
+
     def _run(self) -> None:
         """Loop forever, restarting muselsl whenever it exits."""
         while not self._stop_event.is_set():
@@ -54,11 +94,11 @@ class MuseStreamSupervisor:
             # monitor rather than spawning a competing muselsl process.
             if self._lsl_stream_available():
                 if self.verbose:
-                    print("[muselsl] LSL stream already active; monitoring...")
+                    self._log("[muselsl] LSL stream already active; monitoring...")
                 while not self._stop_event.is_set():
                     self._stop_event.wait(2.0)
                     if not self._lsl_stream_available():
-                        print(
+                        self._log(
                             "[muselsl] LSL stream lost; "
                             f"retrying in {self.reconnect_delay_seconds:.1f}s"
                         )
@@ -68,28 +108,36 @@ class MuseStreamSupervisor:
 
             try:
                 if self.verbose:
-                    print("[muselsl] searching for Muse device...")
+                    self._log("[muselsl] searching for Muse device...")
 
-                cmd = self._build_muselsl_command()
-                # Discard subprocess output to prevent pipe-buffer stalls;
-                # the supervisor's own print() statements provide status.
-                sink = None if self.verbose else subprocess.DEVNULL
                 started_at = time.monotonic()
-                process = subprocess.Popen(cmd, stdout=sink, stderr=sink)
+                process = mp.Process(
+                    target=_run_muselsl_stream,
+                    args=(
+                        self.address,
+                        self.backend,
+                        self.interface,
+                        self.name,
+                        self.ppg_enabled,
+                        self.acc_enabled,
+                        self.gyro_enabled,
+                        self.verbose,
+                    ),
+                    daemon=True,
+                    name="muselsl-stream",
+                )
+                process.start()
 
                 # Wait for the process to exit
                 while not self._stop_event.is_set():
-                    if process.poll() is not None:
+                    if not process.is_alive():
                         break
                     time.sleep(0.5)
                 else:
                     # Stop event was set — terminate gracefully and exit loop.
-                    if process.poll() is None:
+                    if process.is_alive():
                         process.terminate()
-                        try:
-                            process.wait(timeout=5)
-                        except subprocess.TimeoutExpired:
-                            process.kill()
+                        process.join(timeout=5)
                     break
 
                 if self._stop_event.is_set():
@@ -98,12 +146,12 @@ class MuseStreamSupervisor:
                 elapsed = time.monotonic() - started_at
                 if elapsed < self._MIN_CONNECTED_SECONDS:
                     # Exited almost immediately — device not found during scan.
-                    print(
+                    self._log(
                         "[muselsl] Muse device not found; "
                         f"retrying in {self.reconnect_delay_seconds:.1f}s"
                     )
                 else:
-                    print(
+                    self._log(
                         "[muselsl] streamer stopped or disconnected; "
                         f"retrying in {self.reconnect_delay_seconds:.1f}s"
                     )
@@ -111,32 +159,8 @@ class MuseStreamSupervisor:
             except Exception as err:
                 if self._stop_event.is_set():
                     break
-                print(
+                self._log(
                     f"[muselsl] streamer failed: {err}; retrying in "
                     f"{self.reconnect_delay_seconds:.1f}s"
                 )
             self._stop_event.wait(self.reconnect_delay_seconds)
-
-    def _build_muselsl_command(self) -> list[str]:
-        """Build the muselsl stream command with the configured parameters."""
-        cmd = ["muselsl", "stream"]
-        
-        if self.address:
-            cmd.extend([self.address])
-        if self.backend and self.backend != "auto":
-            cmd.extend(["--backend", self.backend])
-        if self.interface:
-            cmd.extend(["--interface", self.interface])
-        if self.name:
-            cmd.extend(["--name", self.name])
-        if self.ppg_enabled:
-            cmd.append("--ppg")
-        if self.acc_enabled:
-            cmd.append("--acc")
-        if self.gyro_enabled:
-            cmd.append("--gyro")
-        # Let muselsl handle brief BLE hiccups internally rather than exiting
-        # and forcing our supervisor to restart it for every minor dropout.
-        cmd.extend(["--retries", "10"])
-
-        return cmd

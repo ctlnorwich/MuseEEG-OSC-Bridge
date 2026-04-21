@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections import deque
 import multiprocessing as mp
+from queue import Full
+import sys
 from threading import Lock, Thread
 import time
 
@@ -38,6 +40,38 @@ PPG_CONFIDENCE_THRESHOLD = 0.3
 
 class StreamDisconnectedError(RuntimeError):
     """Raised when an LSL stream stops producing samples for too long."""
+
+
+class _QueueWriter:
+    """File-like writer that forwards child-process output to a queue."""
+
+    def __init__(self, log_queue: mp.Queue, source: str) -> None:
+        self._log_queue = log_queue
+        self._source = source
+
+    def write(self, data: str) -> int:
+        """Write queued text in line-sized chunks, dropping on backpressure."""
+        text = data.strip()
+        if not text:
+            return len(data)
+        for line in text.splitlines():
+            try:
+                self._log_queue.put_nowait(f"[{self._source}] {line}")
+            except Full:
+                pass
+        return len(data)
+
+    def flush(self) -> None:
+        """No-op flush required by the file-like interface."""
+
+
+def _configure_process_logging(log_queue: mp.Queue | None, source: str) -> None:
+    """Redirect stdout/stderr to a queue when running under the GUI."""
+    if log_queue is None:
+        return
+    writer = _QueueWriter(log_queue, source)
+    sys.stdout = writer
+    sys.stderr = writer
 
 
 def _summarise_osc_payload(payload):
@@ -106,8 +140,15 @@ def _debug_send(osc_client, address, payload, verbose, last_debug_log_time, log_
         last_debug_log_time[log_key] = now
 
 
-def single_lsl_stream_to_osc(stream_type, osc_ip, osc_port, verbose=False):
+def single_lsl_stream_to_osc(
+    stream_type,
+    osc_ip,
+    osc_port,
+    verbose=False,
+    log_queue=None,
+):
     """Forward non-EEG/PPG LSL samples to OSC under /muse/<type>."""
+    _configure_process_logging(log_queue, stream_type.lower())
     osc_client = udp_client.SimpleUDPClient(osc_ip, osc_port)
     last_debug_log_time = {}
 
@@ -138,8 +179,9 @@ def single_lsl_stream_to_osc(stream_type, osc_ip, osc_port, verbose=False):
             time.sleep(STREAM_RECONNECT_DELAY_SECONDS)
 
 
-def ppg_stream_to_osc(osc_ip, osc_port, verbose=False):
+def ppg_stream_to_osc(osc_ip, osc_port, verbose=False, log_queue=None):
     """Forward raw PPG and publish AMPD-based heartrate features to OSC."""
+    _configure_process_logging(log_queue, "ppg")
     osc_client = udp_client.SimpleUDPClient(osc_ip, osc_port)
     last_debug_log_time = {}
 
@@ -252,8 +294,9 @@ def ppg_stream_to_osc(osc_ip, osc_port, verbose=False):
             time.sleep(STREAM_RECONNECT_DELAY_SECONDS)
 
 
-def eeg_stream_to_osc(use_aux, osc_ip, osc_port, verbose=False):
+def eeg_stream_to_osc(use_aux, osc_ip, osc_port, verbose=False, log_queue=None):
     """Forward raw EEG and publish FFT bandpower features over OSC."""
+    _configure_process_logging(log_queue, "eeg")
     # muselsl channel order (source: github.com/alexandrebarachant/muse-lsl):
     #   0: TP9        (left ear)
     #   1: AF7        (left forehead)
@@ -401,20 +444,31 @@ def start_bridge_processes(
     acc_enabled=True,
     gyro_enabled=True,
     verbose=False,
+    log_queue=None,
 ):
     """Start reconnecting worker processes for each enabled Muse stream."""
     process_specs = [
-        ("EEG", eeg_stream_to_osc, (use_aux, osc_ip, osc_port, verbose)),
+        ("EEG", eeg_stream_to_osc, (use_aux, osc_ip, osc_port, verbose, log_queue)),
     ]
     if ppg_enabled:
-        process_specs.append(("PPG", ppg_stream_to_osc, (osc_ip, osc_port, verbose)))
+        process_specs.append(
+            ("PPG", ppg_stream_to_osc, (osc_ip, osc_port, verbose, log_queue))
+        )
     if acc_enabled:
         process_specs.append(
-            ("ACC", single_lsl_stream_to_osc, ("ACC", osc_ip, osc_port, verbose))
+            (
+                "ACC",
+                single_lsl_stream_to_osc,
+                ("ACC", osc_ip, osc_port, verbose, log_queue),
+            )
         )
     if gyro_enabled:
         process_specs.append(
-            ("GYRO", single_lsl_stream_to_osc, ("GYRO", osc_ip, osc_port, verbose))
+            (
+                "GYRO",
+                single_lsl_stream_to_osc,
+                ("GYRO", osc_ip, osc_port, verbose, log_queue),
+            )
         )
 
     processes = []
