@@ -9,6 +9,8 @@ jobs:
   build:
     name: Build on ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
@@ -45,11 +47,19 @@ jobs:
           zip -r --symlinks Muse-OSC-Bridge-macos.zip Muse-OSC-Bridge.app
 
       - name: Upload signed .app artifact (macOS only)
-        if: runner.os == 'macOS'
+        if: runner.os == 'macOS' && github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
           name: Muse-OSC-Bridge-macos-app
           path: dist/Muse-OSC-Bridge-macos.zip
+
+      - name: Upload macOS release asset
+        if: runner.os == 'macOS' && github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/Muse-OSC-Bridge-macos.zip
+          overwrite_files: true
 
       - name: Package Windows build artifacts
         if: runner.os == 'Windows'
@@ -62,11 +72,19 @@ jobs:
           Compress-Archive -Path $items -DestinationPath 'dist/Muse-OSC-Bridge-windows.zip' -Force
 
       - name: Upload Windows artifact
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
           name: Muse-OSC-Bridge-windows
           path: dist/Muse-OSC-Bridge-windows.zip
+
+      - name: Upload Windows release asset
+        if: runner.os == 'Windows' && github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: dist/Muse-OSC-Bridge-windows.zip
+          overwrite_files: true
 
       - name: Package Linux build artifacts
         if: runner.os == 'Linux'
@@ -75,30 +93,16 @@ jobs:
           tar -czf Muse-OSC-Bridge-linux.tar.gz Muse-OSC-Bridge
 
       - name: Upload Linux artifact
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && github.event_name != 'release'
         uses: actions/upload-artifact@v4
         with:
           name: Muse-OSC-Bridge-linux
           path: dist/Muse-OSC-Bridge-linux.tar.gz
 
-  upload-release-assets:
-    name: Upload artifacts to release
-    needs: build
-    if: github.event_name == 'release'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-
-    steps:
-      - name: Download artifacts from build jobs
-        uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-
-      - name: Upload artifacts to GitHub Release
+      - name: Upload Linux release asset
+        if: runner.os == 'Linux' && github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.release.tag_name }}
-          files: |
-            release-assets/**/*.zip
-            release-assets/**/*.tar.gz
+          files: dist/Muse-OSC-Bridge-linux.tar.gz
+          overwrite_files: true
