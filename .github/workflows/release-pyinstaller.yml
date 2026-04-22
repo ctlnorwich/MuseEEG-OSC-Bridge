@@ -51,14 +51,35 @@ jobs:
           name: Muse-OSC-Bridge-macos-app
           path: dist/Muse-OSC-Bridge-macos.zip
 
-      - name: Upload build artifacts (non-macOS)
-        if: runner.os != 'macOS'
+      - name: Package Windows build artifacts
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $items = @()
+          if (Test-Path 'dist/Muse-OSC-Bridge.exe') { $items += 'dist/Muse-OSC-Bridge.exe' }
+          if (Test-Path 'dist/Muse-OSC-Bridge') { $items += 'dist/Muse-OSC-Bridge' }
+          if ($items.Count -eq 0) { throw 'No Windows build outputs found in dist/' }
+          Compress-Archive -Path $items -DestinationPath 'dist/Muse-OSC-Bridge-windows.zip' -Force
+
+      - name: Upload Windows artifact
+        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: Muse-OSC-Bridge-${{ matrix.os }}
-          path: |
-            dist/Muse-OSC-Bridge/**
-            dist/Muse-OSC-Bridge.exe
+          name: Muse-OSC-Bridge-windows
+          path: dist/Muse-OSC-Bridge-windows.zip
+
+      - name: Package Linux build artifacts
+        if: runner.os == 'Linux'
+        run: |
+          cd dist
+          tar -czf Muse-OSC-Bridge-linux.tar.gz Muse-OSC-Bridge
+
+      - name: Upload Linux artifact
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Muse-OSC-Bridge-linux
+          path: dist/Muse-OSC-Bridge-linux.tar.gz
 
   upload-release-assets:
     name: Upload artifacts to release
@@ -79,4 +100,5 @@ jobs:
         with:
           tag_name: ${{ github.event.release.tag_name }}
           files: |
-            release-assets/**/*
+            release-assets/**/*.zip
+            release-assets/**/*.tar.gz
