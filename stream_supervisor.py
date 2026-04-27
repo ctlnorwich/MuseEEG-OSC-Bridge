@@ -12,6 +12,43 @@ import time
 import pylsl
 
 
+def _is_ble_stream_startup_error(err: Exception) -> bool:
+    """Return True for BLE startup errors that often recover with fewer streams."""
+    text = str(err).lower()
+    return (
+        "characteristic" in text
+        or "gatt services" in text
+        or "unreachable" in text
+        or "not found" in text
+    )
+
+
+def _build_stream_profiles(
+    ppg_enabled: bool,
+    acc_enabled: bool,
+    gyro_enabled: bool,
+) -> list[tuple[bool, bool, bool]]:
+    """Build progressive fallback stream profiles from most to least demanding."""
+    profiles: list[tuple[bool, bool, bool]] = []
+
+    initial = (ppg_enabled, acc_enabled, gyro_enabled)
+    if initial not in profiles:
+        profiles.append(initial)
+
+    # On unstable BLE stacks, progressively reducing active characteristics can
+    # allow EEG to stay connected where full sensor sets fail.
+    candidates = [
+        (ppg_enabled, acc_enabled, False),
+        (ppg_enabled, False, False),
+        (False, False, False),
+    ]
+    for candidate in candidates:
+        if candidate not in profiles:
+            profiles.append(candidate)
+
+    return profiles
+
+
 def _run_muselsl_stream(
     address: str | None,
     backend: str,
@@ -47,20 +84,39 @@ def _run_muselsl_stream(
     from muselsl import stream
 
     log_level = logging.INFO if verbose else logging.ERROR
-    try:
-        stream(
-            address=address,
-            backend=backend,
-            interface=interface,
-            name=name,
-            ppg_enabled=ppg_enabled,
-            acc_enabled=acc_enabled,
-            gyro_enabled=gyro_enabled,
-            retries=10,
-            log_level=log_level,
-        )
-    except Exception as err:
-        print(f"[muselsl] stream exited with error: {err}")
+    profiles = _build_stream_profiles(ppg_enabled, acc_enabled, gyro_enabled)
+    last_error: Exception | None = None
+
+    for index, (ppg_profile, acc_profile, gyro_profile) in enumerate(profiles):
+        if index > 0:
+            print(
+                "[muselsl] retrying with fallback profile "
+                f"ppg={ppg_profile} acc={acc_profile} gyro={gyro_profile}"
+            )
+        try:
+            stream(
+                address=address,
+                backend=backend,
+                interface=interface,
+                name=name,
+                ppg_enabled=ppg_profile,
+                acc_enabled=acc_profile,
+                gyro_enabled=gyro_profile,
+                retries=10,
+                log_level=log_level,
+            )
+            return
+        except Exception as err:
+            last_error = err
+            if not _is_ble_stream_startup_error(err) or index == len(profiles) - 1:
+                break
+            print(
+                "[muselsl] startup failed with BLE characteristic/service error; "
+                f"will reduce enabled streams and retry: {err}"
+            )
+
+    if last_error is not None:
+        print(f"[muselsl] stream exited with error: {last_error}")
 
 
 @dataclass

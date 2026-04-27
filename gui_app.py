@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import multiprocessing as mp
 from queue import Empty
+import re
 import threading
 import time
 
@@ -161,6 +162,13 @@ class MainWindow(QMainWindow):
         controls_layout.addWidget(self.connect_button, 0, 0)
         controls_layout.addWidget(self.disconnect_button, 0, 1)
 
+        self.headset_status_label = QLabel("Headset: Idle")
+        self.profile_status_label = QLabel("Profile: Not started")
+        self.headset_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.profile_status_label.setTextFormat(Qt.TextFormat.PlainText)
+        controls_layout.addWidget(self.headset_status_label, 1, 0, 1, 2)
+        controls_layout.addWidget(self.profile_status_label, 2, 0, 1, 2)
+
         options_group = QGroupBox("Options")
         options_layout = QHBoxLayout(options_group)
 
@@ -225,6 +233,9 @@ class MainWindow(QMainWindow):
         self._log_timer.timeout.connect(self._drain_logs)
         self._log_timer.start()
 
+        self._set_headset_status("Idle")
+        self._set_profile_status("Not started")
+
     def closeEvent(self, event) -> None:
         """Stop background workers before the app closes."""
         if self._session.is_running():
@@ -272,12 +283,87 @@ class MainWindow(QMainWindow):
         self._session.start(config)
         self.connect_button.setEnabled(False)
         self.disconnect_button.setEnabled(True)
+        self._set_headset_status("Starting")
+        self._set_profile_status("Requested")
 
     def _on_disconnect(self) -> None:
         """Stop the current bridge session and re-enable connect."""
         self._session.stop()
         self.connect_button.setEnabled(True)
         self.disconnect_button.setEnabled(False)
+        self._set_headset_status("Disconnected")
+        self._set_profile_status("Stopped")
+
+    def _set_headset_status(self, status: str) -> None:
+        """Update the headset status line shown above the options panel."""
+        self.headset_status_label.setText(f"Headset: {status}")
+        color = self._headset_status_color(status)
+        self.headset_status_label.setStyleSheet(
+            f"color: {color}; font-weight: 600;"
+        )
+
+    def _set_profile_status(self, status: str) -> None:
+        """Update the active stream profile status line."""
+        self.profile_status_label.setText(f"Profile: {status}")
+        color = self._profile_status_color(status)
+        self.profile_status_label.setStyleSheet(
+            f"color: {color}; font-weight: 600;"
+        )
+
+    def _headset_status_color(self, status: str) -> str:
+        """Return color for headset status text."""
+        normalized = status.strip().lower()
+        if normalized in {"connected", "found"}:
+            return "#2f9e44"  # green
+        if normalized in {"scanning", "starting"}:
+            return "#e67700"  # amber
+        if normalized in {"connection failed", "not found", "disconnected"}:
+            return "#c92a2a"  # red
+        return "#495057"  # neutral gray
+
+    def _profile_status_color(self, status: str) -> str:
+        """Return color for stream profile status text."""
+        normalized = status.strip().lower()
+        if normalized in {"error", "stopped"}:
+            return "#c92a2a"  # red
+        if "fallback" in normalized or "ppg=" in normalized:
+            return "#e67700"  # amber
+        if normalized in {"streaming", "requested"} or "eeg" in normalized:
+            return "#1971c2"  # blue
+        if normalized in {"not started"}:
+            return "#495057"  # neutral gray
+        return "#2f9e44"  # green
+
+    def _update_status_from_log_line(self, line: str) -> None:
+        """Translate runtime log lines into concise UI status updates."""
+        text = line.lower()
+
+        if "searching for muses" in text:
+            self._set_headset_status("Scanning")
+        elif "no muses found" in text:
+            self._set_headset_status("Not found")
+        elif "found device" in text:
+            self._set_headset_status("Found")
+        elif "connected." in text and "[muselsl]" in text:
+            self._set_headset_status("Connected")
+        elif "failed to connect" in text:
+            self._set_headset_status("Connection failed")
+        elif "disconnected." in text and "[muselsl]" in text:
+            self._set_headset_status("Disconnected")
+
+        if "retrying with fallback profile" in text:
+            marker = "retrying with fallback profile"
+            profile_text = line[line.lower().find(marker) + len(marker) :].strip()
+            if profile_text:
+                self._set_profile_status(profile_text)
+        elif "streaming" in text and "[muselsl]" in text:
+            match = re.search(r"streaming\s+(.+?)\.\s*$", line, flags=re.IGNORECASE)
+            if match:
+                self._set_profile_status(match.group(1).strip())
+            else:
+                self._set_profile_status("Streaming")
+        elif "stream exited with error" in text:
+            self._set_profile_status("Error")
 
     def _drain_logs(self) -> None:
         """Move queued log lines into the text view at UI cadence."""
@@ -287,7 +373,9 @@ class MainWindow(QMainWindow):
                 line = self._log_queue.get_nowait()
             except Empty:
                 break
-            self.logs_output.appendPlainText(str(line))
+            line_text = str(line)
+            self.logs_output.appendPlainText(line_text)
+            self._update_status_from_log_line(line_text)
             drained += 1
 
 
