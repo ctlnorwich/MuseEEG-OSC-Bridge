@@ -21,22 +21,46 @@ def _run_muselsl_stream(
     acc_enabled: bool,
     gyro_enabled: bool,
     verbose: bool,
+    log_queue: mp.Queue | None = None,
 ) -> None:
     """Run muselsl streaming inside a child process."""
+    # Patch stdio before any import so that windowed/frozen builds never hit
+    # 'NoneType has no attribute write' during muselsl print() or tracebacks.
+    import sys
+    from queue import Full
+
+    if log_queue is not None:
+        from osc_bridge import _QueueWriter
+        _writer = _QueueWriter(log_queue, "muselsl")
+        sys.stdout = _writer
+        sys.stderr = _writer
+    elif sys.stdout is None or sys.stderr is None:
+        class _NullWriter:
+            def write(self, d): return len(d)
+            def flush(self): pass
+        _null = _NullWriter()
+        if sys.stdout is None:
+            sys.stdout = _null
+        if sys.stderr is None:
+            sys.stderr = _null
+
     from muselsl import stream
 
     log_level = logging.INFO if verbose else logging.ERROR
-    stream(
-        address=address,
-        backend=backend,
-        interface=interface,
-        name=name,
-        ppg_enabled=ppg_enabled,
-        acc_enabled=acc_enabled,
-        gyro_enabled=gyro_enabled,
-        retries=10,
-        log_level=log_level,
-    )
+    try:
+        stream(
+            address=address,
+            backend=backend,
+            interface=interface,
+            name=name,
+            ppg_enabled=ppg_enabled,
+            acc_enabled=acc_enabled,
+            gyro_enabled=gyro_enabled,
+            retries=10,
+            log_level=log_level,
+        )
+    except Exception as err:
+        print(f"[muselsl] stream exited with error: {err}")
 
 
 @dataclass
@@ -122,6 +146,7 @@ class MuseStreamSupervisor:
                         self.acc_enabled,
                         self.gyro_enabled,
                         self.verbose,
+                        self.log_queue,
                     ),
                     daemon=True,
                     name="muselsl-stream",

@@ -12,6 +12,7 @@ hiddenimports += collect_submodules('pygatt')
 
 datas = []
 datas += collect_data_files('muselsl')
+datas += collect_data_files('pylsl')  # includes pylsl/lib/liblsl.dll|dylib|so
 
 
 a = Analysis(

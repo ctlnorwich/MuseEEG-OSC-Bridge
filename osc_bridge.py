@@ -42,6 +42,17 @@ class StreamDisconnectedError(RuntimeError):
     """Raised when an LSL stream stops producing samples for too long."""
 
 
+class _NullWriter:
+    """File-like writer that silently discards all output."""
+
+    def write(self, data: str) -> int:
+        """Discard data and report it as consumed."""
+        return len(data)
+
+    def flush(self) -> None:
+        """No-op flush required by the file-like interface."""
+
+
 class _QueueWriter:
     """File-like writer that forwards child-process output to a queue."""
 
@@ -66,12 +77,24 @@ class _QueueWriter:
 
 
 def _configure_process_logging(log_queue: mp.Queue | None, source: str) -> None:
-    """Redirect stdout/stderr to a queue when running under the GUI."""
-    if log_queue is None:
-        return
-    writer = _QueueWriter(log_queue, source)
-    sys.stdout = writer
-    sys.stderr = writer
+    """Redirect stdout/stderr to a safe writer for every child process.
+
+    In windowed/frozen builds sys.stdout and sys.stderr start as None.  Any
+    print() or traceback write will crash with 'NoneType has no attribute
+    write' unless we replace them before any other code runs.
+    """
+    writer: _QueueWriter | _NullWriter
+    if log_queue is not None:
+        writer = _QueueWriter(log_queue, source)
+    else:
+        writer = _NullWriter()
+    if sys.stdout is None:
+        sys.stdout = writer
+    if sys.stderr is None:
+        sys.stderr = writer
+    if log_queue is not None:
+        sys.stdout = writer
+        sys.stderr = writer
 
 
 def _summarise_osc_payload(payload):
